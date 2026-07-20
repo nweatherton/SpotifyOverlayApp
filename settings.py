@@ -22,7 +22,6 @@ DEFAULTS = {
     "bg_color": "#000000",
     "bg_opacity": 140,             # 0 (invisible) - 255 (solid)
     "sync_offset_ms": 0,
-    "click_through": False,
 }
 
 

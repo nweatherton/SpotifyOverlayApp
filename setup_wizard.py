@@ -76,7 +76,8 @@ class SetupWizard(QDialog):
 
         note = QLabel(
             "Your Client ID/Secret are saved only on this computer and are sent "
-            "only to Spotify - never anywhere else."
+            "only to Spotify - never anywhere else. Please look in the taskbar's "
+            "system tray and right click to get options and information about the overlay."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: gray; font-size: 11px;")

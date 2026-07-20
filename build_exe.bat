@@ -38,9 +38,19 @@ if errorlevel 1 (
     exit /b 1
 )
 
+set ICON_ARGS=--icon=app_icon.ico --add-data "app_icon.ico;."
+if not exist app_icon.ico (
+    echo.
+    echo NOTE: app_icon.ico not found in this folder - building without a
+    echo custom icon. The exe and its tray icon will fall back to a
+    echo generic icon. If you have one, name it exactly "app_icon.ico"
+    echo and put it next to main.py, then rerun this script.
+    set ICON_ARGS=
+)
+
 echo.
 echo Building SpotifyLyricsOverlay.exe ...
-python -m PyInstaller --noconfirm --onefile --windowed --name "SpotifyLyricsOverlay" --collect-all PyQt5 --paths=. main.py
+python -m PyInstaller --noconfirm --onefile --windowed --name "SpotifyLyricsOverlay" %ICON_ARGS% --collect-all PyQt5 --paths=. main.py
 
 echo.
 if exist dist\SpotifyLyricsOverlay.exe (

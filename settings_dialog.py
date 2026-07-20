@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSlider,
     QSpinBox,
-    QCheckBox,
     QColorDialog,
     QLabel,
 )
@@ -81,12 +80,6 @@ class SettingsDialog(QDialog):
         self.offset_spin.valueChanged.connect(self._emit_change)
         form.addRow("Lyric sync offset:", self.offset_spin)
 
-        # --- Click-through ---
-        self.click_through_check = QCheckBox("Let clicks pass through to what's underneath")
-        self.click_through_check.setChecked(self.settings["click_through"])
-        self.click_through_check.stateChanged.connect(self._emit_change)
-        form.addRow(self.click_through_check)
-
         root.addLayout(form)
 
         # --- Colors ---
@@ -96,13 +89,6 @@ class SettingsDialog(QDialog):
         color_row.addWidget(self._make_color_button("Background", "bg_color"))
         color_row.addWidget(self._make_color_button("Buttons", "button_color"))
         root.addLayout(color_row)
-
-        note = QLabel(
-            "Tip: while click-through is on, drag/quit from this window\n"
-            "or the tray icon, since you can't click the overlay itself."
-        )
-        note.setStyleSheet("color: gray; font-size: 11px;")
-        root.addWidget(note)
 
         # --- Bottom buttons ---
         btn_row = QHBoxLayout()
@@ -149,8 +135,8 @@ class SettingsDialog(QDialog):
         self.settings["font_size"] = self.font_spin.value()
         self.settings["bg_opacity"] = self.opacity_slider.value()
         self.settings["sync_offset_ms"] = self.offset_spin.value()
-        self.settings["click_through"] = self.click_through_check.isChecked()
         self.settings_changed.emit(self.settings.copy())
+        self.settings["button_color"] = self.settings.get("button_color", "#FFFFFF")
 
     def _reset_defaults(self):
         self.settings = DEFAULTS.copy()
@@ -159,7 +145,6 @@ class SettingsDialog(QDialog):
         self.font_spin.setValue(self.settings["font_size"])
         self.opacity_slider.setValue(self.settings["bg_opacity"])
         self.offset_spin.setValue(self.settings["sync_offset_ms"])
-        self.click_through_check.setChecked(self.settings["click_through"])
         for key, btn in self._color_buttons.items():
             self._paint_button(btn, self.settings[key])
         self._emit_change()

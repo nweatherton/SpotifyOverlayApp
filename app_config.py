@@ -13,12 +13,17 @@
 
 import json
 import os
+import sys
+
 
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
 _CREDENTIALS_FILENAME = "spotify_credentials.json"
 _TOKEN_CACHE_FILENAME = ".spotify_cache"
 
+def resource_path(relative_path):
+    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 def config_dir():
     base = os.getenv("APPDATA") or os.path.expanduser("~")

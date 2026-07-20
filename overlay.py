@@ -12,7 +12,7 @@ from lyrics import fetch_lyrics
 from settings import load_settings, save_settings
 from settings_dialog import SettingsDialog
 from setup_wizard import SetupWizard
-from app_config import clear_credentials
+from app_config import clear_credentials, resource_path
 
 POLL_INTERVAL_MS = 3000  # safe to poll more often now that it's off the UI thread
 RENDER_INTERVAL_MS = 100
@@ -67,6 +67,7 @@ class LyricsOverlay(QWidget):
         self.drag_pos = None
         self._is_compact_mode = None
         self.settings_dialog = None
+        self._poll_busy = False
         self.thread_pool = QThreadPool()
         self.signals = WorkerSignals()
         self.signals.track_ready.connect(self._on_track_ready)
@@ -108,7 +109,6 @@ class LyricsOverlay(QWidget):
     def _init_ui(self):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, self.settings["click_through"])
         
         # Top-level layout is horizontal: [Prev] [Center column] [Next]. The
         # buttons live directly in this row (not nested inside a header row
@@ -198,9 +198,14 @@ class LyricsOverlay(QWidget):
 
     def _init_tray(self):
         self.tray = QSystemTrayIcon(self)
-        icon = self.style().standardIcon(QStyle.SP_MediaVolume)
+        icon = QIcon(resource_path("app_icon.ico"))
+        if icon.isNull():
+            # Never let the tray icon just silently vanish - fall back to a
+            # built-in icon if app_icon.ico is missing or wasn't bundled.
+            icon = self.style().standardIcon(QStyle.SP_MediaVolume)
         self.tray.setIcon(icon)
-        
+        self.tray.setToolTip("Spotify Overlay")
+
         menu = QMenu()
         settings_action = QAction("Settings...", self)
         settings_action.triggered.connect(self.open_settings)
@@ -210,13 +215,38 @@ class LyricsOverlay(QWidget):
         reconfigure_action.triggered.connect(self._reconfigure_spotify)
         menu.addAction(reconfigure_action)
         menu.addSeparator()
-        
+
+        info_action = QAction("About / Info", self)
+        info_action.triggered.connect(self._show_info)
+        menu.addAction(info_action)
+        menu.addSeparator()
+
         quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(QApplication.quit)
+        quit_action.triggered.connect(self._quit_app)
         menu.addAction(quit_action)
-        
+
         self.tray.setContextMenu(menu)
         self.tray.show()
+
+    def _quit_app(self):
+        self.thread_pool.clear()
+        self.tray.hide()      # hide before quit, not after
+        QApplication.quit()
+
+    def _show_info(self):
+        QMessageBox.information(
+            self,
+            "About - Spotify Lyrics Overlay",
+            "This is a Spotify overlay designed to let you see lyrics and "
+            "information about your currently playing song while gaming, "
+            "working, or doing anything else on your computer.\n\n"
+            "Features:\n"
+            "\u2022 Previous / Next track buttons included in the overlay\n"
+            "\u2022 Song name, artist name, and album cover\n"
+            "\u2022 Customizable overlay colors and size\n"
+            "\u2022 Compact mode - shrink the overlay down (around 300w x "
+            "60h works well) to show just the song info without lyrics",
+        )
 
     def _reconfigure_spotify(self):
         """For fixing a typo'd Client ID/Secret, or switching accounts,
@@ -317,7 +347,6 @@ class LyricsOverlay(QWidget):
         self.settings = new_settings
         save_settings(self.settings)
         self._apply_style()
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, self.settings["click_through"])
         
         # If the width changed, trigger the resize logic
         if self.settings["width"] != old_width:
@@ -519,6 +548,14 @@ class LyricsOverlay(QWidget):
         self.signals.track_ready.emit(track)
 
     def poll_spotify(self):
+        # Guard against overlapping polls: if a previous poll is still
+        # in flight (e.g. the very first one, stuck waiting on the user
+        # to finish logging in via the browser), spotipy will otherwise
+        # try to open ANOTHER login tab every time this timer fires
+        # again before the first attempt finishes.
+        if self._poll_busy:
+            return
+        self._poll_busy = True
         self.thread_pool.start(Worker(self._poll_bg))
 
     def _poll_bg(self):
@@ -532,6 +569,7 @@ class LyricsOverlay(QWidget):
     def _on_track_ready(self, track):
         # Runs on the main/UI thread (Qt queues signals back across
         # threads automatically), so it's safe to touch widgets here.
+        self._poll_busy = False
         self.last_track = track
         if not track:
             self.current_track_id = None

@@ -4,15 +4,16 @@
 
 import sys
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
-
-from app_config import has_credentials
+from PyQt5.QtGui import QIcon
+from app_config import has_credentials, resource_path
 from setup_wizard import SetupWizard
 
 
 def main():
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(resource_path("app_icon.ico")))
     app.setQuitOnLastWindowClosed(False)
-
+    
     if not has_credentials():
         wizard = SetupWizard()
         if wizard.exec_() != QDialog.Accepted:
