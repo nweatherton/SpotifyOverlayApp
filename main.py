@@ -9,6 +9,7 @@ from app_config import has_credentials, resource_path
 from setup_wizard import SetupWizard
 
 
+
 def main():
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(resource_path("app_icon.ico")))

@@ -1,18 +1,18 @@
+import sys
+import os
 import time
 import requests
 from PyQt5.QtWidgets import (
     QWidget, QApplication, QLabel, QVBoxLayout, QHBoxLayout,
     QLayout, QSystemTrayIcon, QMenu, QAction, QStyle, QPushButton,
-    QDialog, QMessageBox
+    QSizePolicy
 )
-from PyQt5.QtCore import Qt, QTimer, QPoint, QThreadPool, QRunnable, QObject, pyqtSignal
-from PyQt5.QtGui import QFont, QColor, QPainter, QImage, QPixmap, QIcon, QPolygon
+from PyQt5.QtCore import Qt, QTimer, QPoint, QSize, QThreadPool, QRunnable, QObject, pyqtSignal
+from PyQt5.QtGui import QFont, QFontMetrics, QColor, QPainter, QImage, QPixmap, QIcon, QPolygon
 from spotify_client import SpotifyClient
 from lyrics import fetch_lyrics
 from settings import load_settings, save_settings
 from settings_dialog import SettingsDialog
-from setup_wizard import SetupWizard
-from app_config import clear_credentials, resource_path
 
 POLL_INTERVAL_MS = 3000  # safe to poll more often now that it's off the UI thread
 RENDER_INTERVAL_MS = 100
@@ -30,10 +30,36 @@ LYRIC_GAP_MAX, LYRIC_GAP_MIN = 10, 0
 TOP_GAP = 8 
 TOP_GAP_MAX, TOP_GAP_MIN = 8, 2
 SIDE_MARGIN = 12
-ART_INFO_COMPACT_BUFFER = 24  # extra breathing room before flipping to compact mode
 ART_SIZE = 32
 DEFAULT_WIDTH = 600
 DEFAULT_HEIGHT = 170
+
+# --- Responsive width modes -------------------------------------------------
+# The identity row (art + title/artist) is laid out as [art][text container],
+# with the art always given a fixed size and added to the layout first. As
+# long as neither of those two facts change, the art's position is a pure
+# function of the row's own geometry - it never depends on what the title/
+# artist marquees are doing internally, so nothing about scrolling text can
+# ever nudge it. Three modes, chosen purely from how much width is on hand:
+#   FULL    - plenty of room: identity row top-left, lyrics shown below it.
+#   MARQUEE - lyrics hidden, but enough room for a legible scrolling
+#             title/artist next to the (still stationary) art.
+#   ART_ONLY - too narrow for text to be worth showing at all; just the art,
+#              centered, and nothing else.
+IDENTITY_SPACING = 8
+ART_ONLY_TEXT_MIN = 46   # below this much leftover width, text isn't worth showing
+FULL_MODE_MIN_WIDTH = 260  # below this overall width, drop lyrics for marquee mode
+MODE_FULL, MODE_MARQUEE, MODE_ART_ONLY = "full", "marquee", "art_only"
+
+APP_ICON_FILE = "app_icon.ico"
+
+
+def _resource_path(relative_path):
+    """Resolve a path that works both running from source and when frozen
+    into a single-file PyInstaller exe (which unpacks bundled data files
+    into a temp folder pointed to by sys._MEIPASS at runtime)."""
+    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, relative_path)
 
 class WorkerSignals(QObject):
     track_ready = pyqtSignal(object)
@@ -54,82 +80,119 @@ class Worker(QRunnable):
             self.fn(*self.args, **self.kwargs)
         except Exception as e:
             print(f"[worker] unhandled error: {e}")
-            
-class ScrollingLabel(QLabel):
-    """A QLabel that marquee-scrolls its text horizontally when it's too
-    wide for the space available to it, instead of being cut off.
 
-    Call update_available_width(...) whenever the space available to this
-    label changes (e.g. on a window resize). A plain QLabel with no word
-    wrap otherwise just reports its own width as however wide its full
-    text is - nothing in the surrounding layout forces it to shrink - so
-    checking self.width() against the text's width never actually detects
-    that scrolling is needed; that's why it never scrolled before.
+class MarqueeLabel(QWidget):
+    """A pixel-based, Spotify-style scrolling label.
+
+    Two things make this jitter-free, unlike a QLabel-based scroller:
+      1. It NEVER reports its true text width as its sizeHint - it always
+         asks for a small, constant size and takes whatever width the
+         layout gives it (QSizePolicy.Ignored horizontally). So it can
+         never inflate the layout, push siblings around, or change the
+         row's total width as text scrolls.
+      2. Scrolling is pure paint-offset math - setText()/resizeEvent()
+         recompute geometry, but the per-frame scroll tick only repaints;
+         it never touches layout/geometry at all.
+    Text is also clipped to the widget's own rect, so even if a string is
+    far wider than the space available, it can visually never spill past
+    its own boundary into a neighboring widget (e.g. the album art).
     """
 
-    SCROLL_INTERVAL_MS = 200      # ms between each scroll step
-    PAUSE_TICKS = 10              # ticks to pause at the start of each loop
-    GAP = "    \u2022    "        # separator shown once the text loops
+    TICK_MS = 30          # scroll frame interval
+    SPEED_PX = 1           # pixels moved per tick
+    START_PAUSE_TICKS = 40  # ~1.2s pause at the start of each loop
+    GAP_PX = 30             # gap between the end of the text and its looped repeat
 
-    def __init__(self, parent=None):
+    def __init__(self, font, color, parent=None):
         super().__init__(parent)
-        self._full_text = ""
-        self._available_width = 0
-        self._scroll_pos = 0
-        self._pause_left = 0
+        self._text = ""
+        self._font = font
+        self._color = QColor(color)
+        self._text_w = 0
+        self._offset = 0
+        self._pause_ticks_left = 0
+        self._scrolling = False
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setFixedHeight(QFontMetrics(font).height())
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self._advance)
+        self._timer.timeout.connect(self._on_tick)
+        self._timer.start(self.TICK_MS)
 
-    def update_available_width(self, width):
-        width = max(0, width)
-        if width == self._available_width:
+    def sizeHint(self):
+        return QSize(20, self.height())
+
+    def minimumSizeHint(self):
+        return QSize(0, self.height())
+
+    def set_color(self, color_hex):
+        self._color = QColor(color_hex)
+        self.update()
+
+    def set_font(self, font):
+        self._font = font
+        self.setFixedHeight(QFontMetrics(font).height())
+        self._recalc()
+
+    def setText(self, text):
+        if text == self._text:
             return
-        self._available_width = width
-        self.setMaximumWidth(width if width else 16777215)
-        self._refresh()
+        self._text = text
+        self._recalc()
 
-    def set_text(self, text):
-        if text == self._full_text:
-            # Don't reset the scroll position every time this is called -
-            # refresh_display() calls it on every 100ms render tick, not
-            # just when the track actually changes.
+    def _recalc(self):
+        metrics = QFontMetrics(self._font)
+        self._text_w = metrics.horizontalAdvance(self._text) if self._text else 0
+        self._offset = 0
+        self._pause_ticks_left = self.START_PAUSE_TICKS
+        self._scrolling = self._text_w > self.width()
+        self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Available width changed (e.g. window resize) - re-decide whether
+        # this text needs to scroll at all, but never resize *ourselves*
+        # off of the text - only the layout controls our geometry.
+        was_scrolling = self._scrolling
+        self._scrolling = self._text_w > self.width()
+        if not self._scrolling:
+            self._offset = 0
+        elif not was_scrolling:
+            self._pause_ticks_left = self.START_PAUSE_TICKS
+        self.update()
+
+    def _on_tick(self):
+        if not self._scrolling or not self.isVisible():
             return
-        self._full_text = text
-        self._scroll_pos = 0
-        self._pause_left = self.PAUSE_TICKS
-        self._refresh()
+        if self._pause_ticks_left > 0:
+            self._pause_ticks_left -= 1
+            return
+        self._offset -= self.SPEED_PX
+        if self._offset <= -(self._text_w + self.GAP_PX):
+            self._offset = 0
+            self._pause_ticks_left = self.START_PAUSE_TICKS
+        self.update()
 
-    def _refresh(self):
-        metrics = self.fontMetrics()
-        if not self._full_text or metrics.horizontalAdvance(self._full_text) <= self._available_width:
-            self._timer.stop()
-            self.setText(self._full_text)
+    def paintEvent(self, event):
+        if not self._text:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # Hard clip to our own rect - text can physically never paint
+        # outside this widget's bounds, so it can never draw over the
+        # album art or anything else next to it.
+        painter.setClipRect(self.rect())
+        painter.setFont(self._font)
+        painter.setPen(self._color)
+        metrics = painter.fontMetrics()
+        y = metrics.ascent() + (self.height() - metrics.height()) // 2
+        if not self._scrolling:
+            painter.drawText(0, y, self._text)
         else:
-            self.setText(self._window_text())
-            if not self._timer.isActive():
-                self._timer.start(self.SCROLL_INTERVAL_MS)
+            x = self._offset
+            painter.drawText(x, y, self._text)
+            painter.drawText(x + self._text_w + self.GAP_PX, y, self._text)
+        painter.end()
 
-    def _window_text(self):
-        looped = self._full_text + self.GAP
-        # Repeat enough times that slicing from any scroll_pos still
-        # leaves more than a full label's worth of characters to trim
-        # down from.
-        repeated = looped * 3
-        trimmed = repeated[self._scroll_pos:]
-        metrics = self.fontMetrics()
-        while metrics.horizontalAdvance(trimmed) > self._available_width and len(trimmed) > 1:
-            trimmed = trimmed[:-1]
-        return trimmed
-
-    def _advance(self):
-        if not self._full_text:
-            return
-        if self._pause_left > 0:
-            self._pause_left -= 1
-            return
-        loop_len = len(self._full_text + self.GAP)
-        self._scroll_pos = (self._scroll_pos + 1) % loop_len
-        self.setText(self._window_text())
 
 class LyricsOverlay(QWidget):
     
@@ -141,9 +204,8 @@ class LyricsOverlay(QWidget):
         self.lyrics_data = None
         self.last_track = None
         self.drag_pos = None
-        self._is_compact_mode = None
+        self._responsive_mode = None
         self.settings_dialog = None
-        self._poll_busy = False
         self.thread_pool = QThreadPool()
         self.signals = WorkerSignals()
         self.signals.track_ready.connect(self._on_track_ready)
@@ -185,6 +247,8 @@ class LyricsOverlay(QWidget):
     def _init_ui(self):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, self.settings.get("click_through", False))
+        self.setWindowIcon(self._load_app_icon())
         
         # Top-level layout is horizontal: [Prev] [Center column] [Next]. The
         # buttons live directly in this row (not nested inside a header row
@@ -225,9 +289,10 @@ class LyricsOverlay(QWidget):
         self.center_layout.setSpacing(0)
         
         # Art + title/artist, wrapped in their own widget so we can toggle
-        # its alignment (top-left in the normal layout, centered in the
-        # compact "art only" layout) with a single setAlignment() call
-        # rather than restructuring the layout each time.
+        # its alignment with a single setAlignment() call as the responsive
+        # mode changes: top-left and stretched full-width in FULL mode,
+        # vertically centered and stretched full-width in MARQUEE mode, or
+        # shrunk-and-centered (art only, text hidden) in ART_ONLY mode.
         self.identity_widget = QWidget()
         identity_layout = QHBoxLayout(self.identity_widget)
         identity_layout.setContentsMargins(0, 0, 0, 0)
@@ -238,21 +303,26 @@ class LyricsOverlay(QWidget):
         self.label_art.setStyleSheet("background: #333; border-radius: 4px;")
         self.label_art.setAlignment(Qt.AlignCenter)
         
-        info_layout = QVBoxLayout()
+        # Title/artist live in their own container widget so it - not the
+        # marquee labels themselves - is what the layout resizes. The art
+        # is added first with a fixed size and never touched again, so its
+        # position depends only on this row's own geometry, never on what
+        # the marquees are doing frame to frame.
+        self.text_container = QWidget()
+        self.text_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        info_layout = QVBoxLayout(self.text_container)
+        info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(0)
-        # After
-        self.label_title = ScrollingLabel()
-        self.label_title.setText("Not Playing")
-        self.label_artist = ScrollingLabel()
-        self.label_artist.setText("Spotify")
+        self.label_title = MarqueeLabel(QFont("Segoe UI", 11, QFont.Bold), self.settings["text_color"])
+        self.label_artist = MarqueeLabel(QFont("Segoe UI", 9), self.settings.get("next_text_color", "#808080"))
         info_layout.addWidget(self.label_title)
         info_layout.addWidget(self.label_artist)
         
         identity_layout.addWidget(self.label_art, 0, Qt.AlignVCenter)
-        identity_layout.addLayout(info_layout)
-        identity_layout.setAlignment(info_layout, Qt.AlignVCenter)
+        identity_layout.addWidget(self.text_container, 1)
+        identity_layout.setAlignment(self.text_container, Qt.AlignVCenter)
         
-        self.center_layout.addWidget(self.identity_widget, 0, Qt.AlignLeft | Qt.AlignTop)
+        self.center_layout.addWidget(self.identity_widget, 0, Qt.AlignTop)
         
         self.spacer_top_mid = QWidget()
         self.spacer_top_mid.setFixedHeight(TOP_GAP)
@@ -275,87 +345,35 @@ class LyricsOverlay(QWidget):
         self.main_layout.addWidget(self.btn_next, 0, Qt.AlignVCenter)
         self._apply_style()
 
+    def _load_app_icon(self):
+        # app_icon.ico is used for both the taskbar/window icon and the
+        # tray icon, so it only needs to be swapped in one place. Falls
+        # back to a built-in Qt icon rather than crashing if the .ico is
+        # ever missing (e.g. it wasn't bundled into a packaged build).
+        icon_path = _resource_path(APP_ICON_FILE)
+        if os.path.exists(icon_path):
+            icon = QIcon(icon_path)
+            if not icon.isNull():
+                return icon
+        print(f"[icon] {APP_ICON_FILE} not found at {icon_path}, using fallback icon")
+        return self.style().standardIcon(QStyle.SP_MediaVolume)
+
     def _init_tray(self):
         self.tray = QSystemTrayIcon(self)
-        icon = QIcon(resource_path("app_icon.ico"))
-        if icon.isNull():
-            # Never let the tray icon just silently vanish - fall back to a
-            # built-in icon if app_icon.ico is missing or wasn't bundled.
-            icon = self.style().standardIcon(QStyle.SP_MediaVolume)
-        self.tray.setIcon(icon)
-        self.tray.setToolTip("Spotify Overlay")
-
+        self.tray.setIcon(self._load_app_icon())
+        
         menu = QMenu()
         settings_action = QAction("Settings...", self)
         settings_action.triggered.connect(self.open_settings)
         menu.addAction(settings_action)
-
-        reconfigure_action = QAction("Reconfigure Spotify...", self)
-        reconfigure_action.triggered.connect(self._reconfigure_spotify)
-        menu.addAction(reconfigure_action)
         menu.addSeparator()
-
-        info_action = QAction("About / Info", self)
-        info_action.triggered.connect(self._show_info)
-        menu.addAction(info_action)
-        menu.addSeparator()
-
+        
         quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(self._quit_app)
+        quit_action.triggered.connect(QApplication.quit)
         menu.addAction(quit_action)
-
+        
         self.tray.setContextMenu(menu)
         self.tray.show()
-
-    def _quit_app(self):
-        self.thread_pool.clear()
-        self.tray.hide()      # hide before quit, not after
-        QApplication.quit()
-
-    def _show_info(self):
-        QMessageBox.information(
-            self,
-            "About - Spotify Lyrics Overlay",
-            "This is a Spotify overlay designed to let you see lyrics and "
-            "information about your currently playing song while gaming, "
-            "working, or doing anything else on your computer.\n\n"
-            "Features:\n"
-            "\u2022 Previous / Next track buttons included in the overlay\n"
-            "\u2022 Song name, artist name, and album cover\n"
-            "\u2022 Customizable overlay colors and size\n"
-            "\u2022 Compact mode - shrink the overlay down (around 300w x "
-            "60h works well) to show just the song info without lyrics. " \
-            "Reset to defaults button resets one option at a time so " \
-            "click it several times to reset everything.",
-        )
-
-    def _reconfigure_spotify(self):
-        """For fixing a typo'd Client ID/Secret, or switching accounts,
-        without having to know that a hidden credentials file exists."""
-        reply = QMessageBox.question(
-            self,
-            "Reconfigure Spotify",
-            "This will sign out and let you re-enter your Spotify Client "
-            "ID/Secret. Continue?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        clear_credentials()
-        wizard = SetupWizard()
-        if wizard.exec_() != QDialog.Accepted:
-            return
-
-        try:
-            self.spotify = SpotifyClient()
-        except Exception as e:
-            QMessageBox.critical(self, "Spotify Error", f"Couldn't connect: {e}")
-            return
-
-        self.current_track_id = None
-        self.lyrics_data = None
-        self.poll_spotify()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -400,10 +418,10 @@ class LyricsOverlay(QWidget):
         
         # Title/artist use their own fixed sizing (independent of the lyric
         # font_size setting) since they now live in a small top-left block.
-        self.label_title.setFont(QFont("Segoe UI", 11, QFont.Bold))
-        self.label_title.setStyleSheet(f"color: {self.settings['text_color']};")
-        self.label_artist.setFont(QFont("Segoe UI", 9))
-        self.label_artist.setStyleSheet(f"color: {next_color};")
+        self.label_title.set_font(QFont("Segoe UI", 11, QFont.Bold))
+        self.label_title.set_color(self.settings["text_color"])
+        self.label_artist.set_font(QFont("Segoe UI", 9))
+        self.label_artist.set_color(next_color)
         
         btn_color = self.settings.get("button_color", "#FFFFFF")
         btn_style = "QPushButton { background: transparent; border: none; padding: 5px; } QPushButton:hover { background: rgba(255, 255, 255, 0.1); border-radius: 5px; }"
@@ -428,6 +446,7 @@ class LyricsOverlay(QWidget):
         self.settings = new_settings
         save_settings(self.settings)
         self._apply_style()
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, self.settings.get("click_through", False))
         
         # If the width changed, trigger the resize logic
         if self.settings["width"] != old_width:
@@ -454,43 +473,54 @@ class LyricsOverlay(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_responsive_mode()
-        self._update_marquee_widths()
-
-    def _update_marquee_widths(self):
-        if not hasattr(self, "label_title"):
-            return
-        # Space available to the title/artist labels: the center
-        # column's width, minus the album art and the gap next to it.
-        available = self.center_container.width() - ART_SIZE - 8 - 4
-        available = max(available, 20)
-        self.label_title.update_available_width(available)
-        self.label_artist.update_available_width(available)
 
     def _update_responsive_mode(self):
         if not hasattr(self, "identity_widget"):
             return
-            
-        natural_width = self.identity_widget.sizeHint().width()
-        compact_threshold = natural_width + ART_INFO_COMPACT_BUFFER
-        is_compact = self.center_container.width() < compact_threshold
-        
-        if is_compact == self._is_compact_mode:
+
+        cw = self.center_container.width()
+        text_available = cw - ART_SIZE - IDENTITY_SPACING
+
+        if text_available < ART_ONLY_TEXT_MIN:
+            mode = MODE_ART_ONLY
+        elif cw < FULL_MODE_MIN_WIDTH:
+            mode = MODE_MARQUEE
+        else:
+            mode = MODE_FULL
+
+        if mode == self._responsive_mode:
             return
-            
-        self._is_compact_mode = is_compact
-        if is_compact:
+
+        self._responsive_mode = mode
+
+        if mode == MODE_ART_ONLY:
+            # Art alone, centered - the text container is fully removed
+            # from the row so the art can't be nudged by anything.
+            self.text_container.setVisible(False)
             self.center_layout.setAlignment(self.identity_widget, Qt.AlignCenter)
             self.label_current.setVisible(False)
             self.label_next.setVisible(False)
             self.spacer_top_mid.setVisible(False)
             self.spacer_mid_bottom.setVisible(False)
+        elif mode == MODE_MARQUEE:
+            # Art stays put on the left; title/artist get the rest of the
+            # row's width to scroll in. Lyrics are hidden - there isn't
+            # room for both, and scrolling text under scrolling lyrics
+            # would be a mess to read.
+            self.text_container.setVisible(True)
+            self.center_layout.setAlignment(self.identity_widget, Qt.AlignVCenter)
+            self.label_current.setVisible(False)
+            self.label_next.setVisible(False)
+            self.spacer_top_mid.setVisible(False)
+            self.spacer_mid_bottom.setVisible(False)
         else:
-            self.center_layout.setAlignment(self.identity_widget, Qt.AlignLeft | Qt.AlignTop)
+            self.text_container.setVisible(True)
+            self.center_layout.setAlignment(self.identity_widget, Qt.AlignTop)
             self.label_current.setVisible(True)
             self.spacer_top_mid.setVisible(True)
             # label_next / spacer_mid_bottom visibility is governed by the
             # vertical squeeze in _recompute_height, not here.
-            
+
         self._recompute_height()
 
     @staticmethod
@@ -505,7 +535,7 @@ class LyricsOverlay(QWidget):
     def _recompute_height(self):
         target_height = self.settings.get("height", DEFAULT_HEIGHT)
 
-        if self._is_compact_mode:
+        if self._responsive_mode != MODE_FULL:
             self.label_current.setVisible(False)
             self.label_next.setVisible(False)
             self.spacer_top_mid.setVisible(False)
@@ -640,14 +670,6 @@ class LyricsOverlay(QWidget):
         self.signals.track_ready.emit(track)
 
     def poll_spotify(self):
-        # Guard against overlapping polls: if a previous poll is still
-        # in flight (e.g. the very first one, stuck waiting on the user
-        # to finish logging in via the browser), spotipy will otherwise
-        # try to open ANOTHER login tab every time this timer fires
-        # again before the first attempt finishes.
-        if self._poll_busy:
-            return
-        self._poll_busy = True
         self.thread_pool.start(Worker(self._poll_bg))
 
     def _poll_bg(self):
@@ -661,7 +683,6 @@ class LyricsOverlay(QWidget):
     def _on_track_ready(self, track):
         # Runs on the main/UI thread (Qt queues signals back across
         # threads automatically), so it's safe to touch widgets here.
-        self._poll_busy = False
         self.last_track = track
         if not track:
             self.current_track_id = None
@@ -733,8 +754,8 @@ class LyricsOverlay(QWidget):
             self._recompute_height()
             return
             
-        self.label_title.set_text(track['title'])
-        self.label_artist.set_text(track['artist'])
+        self.label_title.setText(track['title'])
+        self.label_artist.setText(track['artist'])
         
         if not self.lyrics_data:
             self.label_current.setText(f"{track['title']} \u2014 {track['artist']}")
