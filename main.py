@@ -26,15 +26,19 @@ def main():
     try:
         overlay = LyricsOverlay()
     except Exception as e:
-        QMessageBox.critical(
-            None,
-            "Couldn't start",
-            "Something went wrong connecting to Spotify:\n\n"
-            f"{e}\n\n"
-            "Double check the Client ID/Secret and that the Redirect URI in "
-            "your Spotify app's settings is exactly:\n"
-            "http://127.0.0.1:8888/callback",
-        )
+        msg_box = QMessageBox()
+        msg_box.setIcon(QMessageBox.Critical)
+        msg_box.setWindowTitle("Couldn't start")
+        msg_box.setText("Something went wrong connecting to Spotify:\n\n"
+                        f"{e}\n\n"
+                        "Double check the Client ID/Secret and that the Redirect URI in "
+                        "your Spotify app's settings is exactly:\n"
+                        "http://127.0.0.1:8888/callback")
+        
+        # This is the magic line that makes the text selectable
+        msg_box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        
+        msg_box.exec_()
         return
 
     overlay.show()

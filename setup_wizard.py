@@ -42,6 +42,7 @@ class SetupWizard(QDialog):
             "6. Open the app you just created, click \u201cSettings,\u201d and copy\n"
             "   the Client ID and Client Secret into the boxes below."
         )
+        steps.setTextInteractionFlags(Qt.TextSelectableByMouse)
         steps.setWordWrap(True)
         steps.setStyleSheet(
             "color: #222; background: #f2f2f2; padding: 10px; border-radius: 6px;"

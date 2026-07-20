@@ -245,7 +245,9 @@ class LyricsOverlay(QWidget):
             "\u2022 Song name, artist name, and album cover\n"
             "\u2022 Customizable overlay colors and size\n"
             "\u2022 Compact mode - shrink the overlay down (around 300w x "
-            "60h works well) to show just the song info without lyrics",
+            "60h works well) to show just the song info without lyrics. " \
+            "Reset to defaults button resets one option at a time so " \
+            "click it several times to reset everything.",
         )
 
     def _reconfigure_spotify(self):
