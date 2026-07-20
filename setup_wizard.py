@@ -5,7 +5,7 @@
 # "app" - Spotify requires every program that talks to their API to have
 # one, there's no way around it - and saves what they enter locally so they
 # never have to do this again on this computer.
-
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit, QLabel,
     QPushButton, QHBoxLayout, QMessageBox

@@ -54,6 +54,82 @@ class Worker(QRunnable):
             self.fn(*self.args, **self.kwargs)
         except Exception as e:
             print(f"[worker] unhandled error: {e}")
+            
+class ScrollingLabel(QLabel):
+    """A QLabel that marquee-scrolls its text horizontally when it's too
+    wide for the space available to it, instead of being cut off.
+
+    Call update_available_width(...) whenever the space available to this
+    label changes (e.g. on a window resize). A plain QLabel with no word
+    wrap otherwise just reports its own width as however wide its full
+    text is - nothing in the surrounding layout forces it to shrink - so
+    checking self.width() against the text's width never actually detects
+    that scrolling is needed; that's why it never scrolled before.
+    """
+
+    SCROLL_INTERVAL_MS = 200      # ms between each scroll step
+    PAUSE_TICKS = 10              # ticks to pause at the start of each loop
+    GAP = "    \u2022    "        # separator shown once the text loops
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self._available_width = 0
+        self._scroll_pos = 0
+        self._pause_left = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._advance)
+
+    def update_available_width(self, width):
+        width = max(0, width)
+        if width == self._available_width:
+            return
+        self._available_width = width
+        self.setMaximumWidth(width if width else 16777215)
+        self._refresh()
+
+    def set_text(self, text):
+        if text == self._full_text:
+            # Don't reset the scroll position every time this is called -
+            # refresh_display() calls it on every 100ms render tick, not
+            # just when the track actually changes.
+            return
+        self._full_text = text
+        self._scroll_pos = 0
+        self._pause_left = self.PAUSE_TICKS
+        self._refresh()
+
+    def _refresh(self):
+        metrics = self.fontMetrics()
+        if not self._full_text or metrics.horizontalAdvance(self._full_text) <= self._available_width:
+            self._timer.stop()
+            self.setText(self._full_text)
+        else:
+            self.setText(self._window_text())
+            if not self._timer.isActive():
+                self._timer.start(self.SCROLL_INTERVAL_MS)
+
+    def _window_text(self):
+        looped = self._full_text + self.GAP
+        # Repeat enough times that slicing from any scroll_pos still
+        # leaves more than a full label's worth of characters to trim
+        # down from.
+        repeated = looped * 3
+        trimmed = repeated[self._scroll_pos:]
+        metrics = self.fontMetrics()
+        while metrics.horizontalAdvance(trimmed) > self._available_width and len(trimmed) > 1:
+            trimmed = trimmed[:-1]
+        return trimmed
+
+    def _advance(self):
+        if not self._full_text:
+            return
+        if self._pause_left > 0:
+            self._pause_left -= 1
+            return
+        loop_len = len(self._full_text + self.GAP)
+        self._scroll_pos = (self._scroll_pos + 1) % loop_len
+        self.setText(self._window_text())
 
 class LyricsOverlay(QWidget):
     
@@ -164,8 +240,11 @@ class LyricsOverlay(QWidget):
         
         info_layout = QVBoxLayout()
         info_layout.setSpacing(0)
-        self.label_title = QLabel("Not Playing")
-        self.label_artist = QLabel("Spotify")
+        # After
+        self.label_title = ScrollingLabel()
+        self.label_title.setText("Not Playing")
+        self.label_artist = ScrollingLabel()
+        self.label_artist.setText("Spotify")
         info_layout.addWidget(self.label_title)
         info_layout.addWidget(self.label_artist)
         
@@ -375,6 +454,17 @@ class LyricsOverlay(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_responsive_mode()
+        self._update_marquee_widths()
+
+    def _update_marquee_widths(self):
+        if not hasattr(self, "label_title"):
+            return
+        # Space available to the title/artist labels: the center
+        # column's width, minus the album art and the gap next to it.
+        available = self.center_container.width() - ART_SIZE - 8 - 4
+        available = max(available, 20)
+        self.label_title.update_available_width(available)
+        self.label_artist.update_available_width(available)
 
     def _update_responsive_mode(self):
         if not hasattr(self, "identity_widget"):
@@ -643,8 +733,8 @@ class LyricsOverlay(QWidget):
             self._recompute_height()
             return
             
-        self.label_title.setText(track['title'])
-        self.label_artist.setText(track['artist'])
+        self.label_title.set_text(track['title'])
+        self.label_artist.set_text(track['artist'])
         
         if not self.lyrics_data:
             self.label_current.setText(f"{track['title']} \u2014 {track['artist']}")
