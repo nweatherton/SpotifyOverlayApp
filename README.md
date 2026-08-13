@@ -33,6 +33,9 @@ relaunching — a menu option for this is on the list.
 
 ## Just want the .exe?
 
+See [`dist/SpotifyLyricsOverlay.exe`](dist/SpotifyLyricsOverlay.exe) — for
+a ready to download executable file from the latest version.
+
 See [`BUILD_AND_SHARE.md`](BUILD_AND_SHARE.md) — build it once on a
 machine with Python, then it's a single file anyone can double-click,
 no Python required on their end.
