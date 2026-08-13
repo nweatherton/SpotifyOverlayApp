@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+
+# PyInstaller build intermediates
+build/
+
+# Local Spotify authentication
+.spotify_cache
