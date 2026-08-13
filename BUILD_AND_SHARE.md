@@ -47,7 +47,7 @@ Spotify requires every program that talks to their API to be registered,
 and it has to be done through a real Spotify account in a browser - there's
 no way to script around that part, and it can't be done once on your end
 for everyone else, since Spotify caps how many people can use a single
-unapproved "app" (25 in Spotify's free/development mode). Registering one
+unapproved "app" (5 in Spotify's free/development mode). Registering one
 takes about 2 minutes and is exactly what the wizard walks them through -
 it's free, and it isn't a subscription or anything Spotify charges for.
 
