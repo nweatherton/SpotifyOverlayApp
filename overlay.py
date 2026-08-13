@@ -5,7 +5,7 @@ import requests
 from PyQt5.QtWidgets import (
     QWidget, QApplication, QLabel, QVBoxLayout, QHBoxLayout,
     QLayout, QSystemTrayIcon, QMenu, QAction, QStyle, QPushButton,
-    QSizePolicy
+    QSizePolicy, QMessageBox
 )
 from PyQt5.QtCore import Qt, QTimer, QPoint, QSize, QThreadPool, QRunnable, QObject, pyqtSignal
 from PyQt5.QtGui import QFont, QFontMetrics, QColor, QPainter, QImage, QPixmap, QIcon, QPolygon
@@ -366,14 +366,41 @@ class LyricsOverlay(QWidget):
         settings_action = QAction("Settings...", self)
         settings_action.triggered.connect(self.open_settings)
         menu.addAction(settings_action)
-        menu.addSeparator()
         
+        info_action = QAction("About / Info", self)
+        info_action.triggered.connect(self._show_info)
+        menu.addAction(info_action)
+        
+        menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(QApplication.quit)
         menu.addAction(quit_action)
         
         self.tray.setContextMenu(menu)
         self.tray.show()
+
+    def _show_info(self):
+        message = (
+            "This is a Spotify overlay designed to let you see lyrics and "
+            "information about your currently playing song while gaming, "
+            "working, or doing anything else on your computer.\n\n"
+            "Features:\n"
+            "\u2022 Previous / Next track buttons included in the overlay\n"
+            "\u2022 Song name, artist name, and album cover\n"
+            "\u2022 Customizable overlay colors and size\n"
+            "\u2022 Compact mode - shrink the overlay down (around 300w x "
+            "60h) to show just the song info without lyrics.\n"
+            "\u2022 Compact mode - shrink the overlay down (around 180w x "
+            "60h) to show just the album cover.\n\n"
+            "Reset to defaults button resets one option at a time so "
+            "click it several times to reset everything.\n\n"
+            "I hope you enjoy the Spotify Overlay, Noah"
+        )
+        QMessageBox.information(
+            self,
+            "About - Spotify Lyrics Overlay",
+            message
+        )
 
     def paintEvent(self, event):
         painter = QPainter(self)
