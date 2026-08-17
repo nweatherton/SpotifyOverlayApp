@@ -90,3 +90,6 @@ hammering the API.
   can't accidentally drag it mid-game): there's a `click_through` field
   in `overlay_settings.json` but no UI toggle yet — set it to `true` by
   hand in that file if you want it now.
+
+## LLM Use
+LLMs such as Claude and ChatGPT were used throughout the development of this tool.
